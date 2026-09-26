@@ -4,6 +4,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   FormControl,
   Grid,
@@ -37,10 +41,13 @@ import {
   PREPARATION_LABELS,
   SECTION_QUALITIES,
   SECTION_QUALITY_LABELS,
+  consumedWeight,
+  isSectionActive,
   mineralTotal,
   type MineralRatios,
   type PreparationMethod,
   type SectionQuality,
+  type ThinSection,
 } from '../types/section';
 import {
   FALL_OR_FIND_LABELS,
@@ -60,6 +67,7 @@ export default function Detail() {
   const sections = useSampleStore((s) => s.sections);
   const analysis = useSampleStore((s) => s.analysis);
   const addSection = useSampleStore((s) => s.addSection);
+  const withdrawSection = useSampleStore((s) => s.withdrawSection);
   const addAnalysis = useSampleStore((s) => s.addAnalysis);
   const updateSample = useSampleStore((s) => s.updateSample);
   const notify = useToastStore((s) => s.notify);
@@ -68,6 +76,9 @@ export default function Detail() {
   const find = useMemo(() => finds.find((f) => f.sampleId === id), [finds, id]);
   const mySections = useMemo(() => sections.filter((s) => s.sampleId === id), [sections, id]);
   const myAnalysis = useMemo(() => analysis.filter((a) => a.sampleId === id), [analysis, id]);
+  // 重量台账：已领用 = 未撤回切片的领用重量合计；剩余 = 总重量 - 已领用
+  const consumed = useMemo(() => consumedWeight(mySections), [mySections]);
+  const remaining = Math.max(0, (sample?.totalWeight ?? 0) - consumed);
 
   const [sectionDraft, setSectionDraft] = useState({
     sectionNo: '',
@@ -75,8 +86,11 @@ export default function Detail() {
     preparation: 'resin' as PreparationMethod,
     quality: 'unrated' as SectionQuality,
     micrograph: '',
+    weightUsed: 0.5,
     minerals: { olivine: 40, pyroxene: 25, feldspar: 15, metal: 20 } as MineralRatios,
   });
+  const [withdrawTarget, setWithdrawTarget] = useState<ThinSection | null>(null);
+  const [withdrawReason, setWithdrawReason] = useState('');
   const [analysisDraft, setAnalysisDraft] = useState({
     method: 'microprobe' as AnalysisMethod,
     fa: 18,
@@ -104,18 +118,41 @@ export default function Detail() {
   const hits = evaluateThresholds(analysisDraft);
 
   const submitSection = async () => {
+    const weight = Number(sectionDraft.weightUsed);
+    if (!Number.isFinite(weight) || weight <= 0) {
+      notify('请填写大于 0 的领用重量', 'warning');
+      return;
+    }
     const no = sectionDraft.sectionNo.trim() || `TS-${new Date().getFullYear()}-${mySections.length + 1}`.padEnd(3, '0');
-    await addSection({
-      sectionNo: no,
-      sampleId: sample.id,
-      thickness: Number(sectionDraft.thickness),
-      preparation: sectionDraft.preparation,
-      minerals: sectionDraft.minerals,
-      micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
-      quality: sectionDraft.quality,
-    });
-    notify(`已为 ${sample.sampleNo} 新增切片 ${no}`);
-    setSectionDraft((d) => ({ ...d, sectionNo: '', micrograph: '' }));
+    try {
+      await addSection({
+        sectionNo: no,
+        sampleId: sample.id,
+        thickness: Number(sectionDraft.thickness),
+        preparation: sectionDraft.preparation,
+        minerals: sectionDraft.minerals,
+        micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
+        quality: sectionDraft.quality,
+        weightUsed: weight,
+      });
+      notify(`已为 ${sample.sampleNo} 新增切片 ${no}，领用 ${formatWeight(weight)}`);
+      setSectionDraft((d) => ({ ...d, sectionNo: '', micrograph: '' }));
+    } catch (err) {
+      // 超出余量：不写入切片，也不改变已有记录
+      notify(err instanceof Error ? err.message : '领用超出可用余量，未写入切片', 'warning');
+    }
+  };
+
+  const confirmWithdraw = async () => {
+    if (!withdrawTarget || !withdrawReason.trim()) return;
+    try {
+      await withdrawSection(withdrawTarget.id, withdrawReason);
+      notify(`已撤回切片 ${withdrawTarget.sectionNo}，领用重量已归还余量`);
+      setWithdrawTarget(null);
+      setWithdrawReason('');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '撤回失败', 'warning');
+    }
   };
 
   const submitAnalysis = async () => {
@@ -184,6 +221,23 @@ export default function Detail() {
                     总重量
                   </Typography>
                   <Typography variant="body1">{formatWeight(sample.totalWeight)}</Typography>
+                </Grid>
+                <Grid item xs={6} sm={4}>
+                  <Typography variant="caption" color="text.secondary">
+                    已领用（切片制样）
+                  </Typography>
+                  <Typography variant="body1">{formatWeight(consumed)}</Typography>
+                </Grid>
+                <Grid item xs={6} sm={4}>
+                  <Typography variant="caption" color="text.secondary">
+                    可用余量
+                  </Typography>
+                  <Typography
+                    variant="body1"
+                    color={remaining > 0 ? 'text.primary' : 'error.main'}
+                  >
+                    {formatWeight(remaining)}
+                  </Typography>
                 </Grid>
                 <Grid item xs={6} sm={4}>
                   <Typography variant="caption" color="text.secondary">
@@ -284,30 +338,60 @@ export default function Detail() {
               <Alert severity="info">暂无切片记录，可在下方就地新增。</Alert>
             ) : (
               <Stack spacing={1.25}>
-                {mySections.map((s) => (
-                  <Box
-                    key={s.id}
-                    sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
-                  >
-                    <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
-                      <Typography variant="subtitle1" fontWeight={700}>
-                        {s.sectionNo}
-                      </Typography>
-                      <Stack direction="row" spacing={0.75}>
-                        <Chip size="small" label={`厚度 ${s.thickness} μm`} />
-                        <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
-                        <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                {mySections.map((s) => {
+                  const active = isSectionActive(s);
+                  return (
+                    <Box
+                      key={s.id}
+                      sx={{
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        borderRadius: 2,
+                        p: 1.5,
+                        opacity: active ? 1 : 0.65,
+                      }}
+                    >
+                      <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
+                        <Typography variant="subtitle1" fontWeight={700}>
+                          {s.sectionNo}
+                        </Typography>
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          <Chip size="small" label={`厚度 ${s.thickness} μm`} />
+                          <Chip size="small" color="primary" variant="outlined" label={`领用 ${formatWeight(s.weightUsed)}`} />
+                          <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
+                          <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                          {!active && <Chip size="small" color="default" label="已撤回" />}
+                        </Stack>
                       </Stack>
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                      矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
-                      （合计 {mineralTotal(s.minerals)}%）
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
-                    </Typography>
-                  </Box>
-                ))}
+                      <Typography variant="body2" color="text.secondary">
+                        矿物占比：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}
+                        （合计 {mineralTotal(s.minerals)}%）
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
+                      </Typography>
+                      {active ? (
+                        <Box sx={{ mt: 0.5 }}>
+                          <Button
+                            size="small"
+                            color="warning"
+                            onClick={() => {
+                              setWithdrawTarget(s);
+                              setWithdrawReason('');
+                            }}
+                          >
+                            制样取消 · 撤回
+                          </Button>
+                        </Box>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          撤回于 {formatDate(s.withdrawnAt ?? 0)}，原因：{s.withdrawReason || '—'}
+                          （领用重量已归还余量）
+                        </Typography>
+                      )}
+                    </Box>
+                  );
+                })}
               </Stack>
             )}
 
@@ -333,6 +417,17 @@ export default function Detail() {
                   value={sectionDraft.thickness}
                   onChange={(e) => setSectionDraft((d) => ({ ...d, thickness: Number(e.target.value) }))}
                   sx={{ width: 140 }}
+                />
+                <TextField
+                  id="section-weight"
+                  size="small"
+                  type="number"
+                  label="领用重量 g"
+                  value={sectionDraft.weightUsed}
+                  onChange={(e) => setSectionDraft((d) => ({ ...d, weightUsed: Number(e.target.value) }))}
+                  error={Number(sectionDraft.weightUsed) > remaining + 1e-9}
+                  helperText={`可用余量 ${formatWeight(remaining)}`}
+                  sx={{ width: 170 }}
                 />
                 <FormControl size="small" sx={{ minWidth: 150 }}>
                   <InputLabel id="prep-label">制样方式</InputLabel>
@@ -546,6 +641,45 @@ export default function Detail() {
           </Paper>
         </Grid>
       </Grid>
+
+      <Dialog
+        open={withdrawTarget !== null}
+        onClose={() => setWithdrawTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>撤回切片 {withdrawTarget?.sectionNo}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              制样取消后，该切片领用的{' '}
+              {withdrawTarget ? formatWeight(withdrawTarget.weightUsed) : ''}{' '}
+              将归还到样本可用余量，切片记录保留为「已撤回」。
+            </Typography>
+            <TextField
+              id="withdraw-reason"
+              autoFocus
+              fullWidth
+              size="small"
+              label="撤回原因"
+              value={withdrawReason}
+              onChange={(e) => setWithdrawReason(e.target.value)}
+              placeholder="例如：制样失败 / 计划取消"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setWithdrawTarget(null)}>取消</Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={!withdrawReason.trim()}
+            onClick={() => void confirmWithdraw()}
+          >
+            确认撤回
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

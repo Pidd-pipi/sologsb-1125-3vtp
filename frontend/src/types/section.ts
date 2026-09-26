@@ -30,6 +30,12 @@ export interface ThinSection {
   /** 显微照片清单（文件名 / 描述） */
   micrographs: string[];
   quality: SectionQuality;
+  /** 制样领用重量，单位 g；保存时从样本可用余量中扣减 */
+  weightUsed: number;
+  /** 制样取消的撤回时间；撤回后领用重量归还余量 */
+  withdrawnAt?: number;
+  /** 撤回原因（必填） */
+  withdrawReason?: string;
   createdAt: number;
 }
 
@@ -60,4 +66,16 @@ export const MINERAL_LABELS: Record<keyof MineralRatios, string> = {
 /** 矿物占比合计 */
 export function mineralTotal(m: MineralRatios): number {
   return MINERAL_KEYS.reduce((sum, k) => sum + (Number(m[k]) || 0), 0);
+}
+
+/** 切片是否仍占用余量（未撤回） */
+export function isSectionActive(s: ThinSection): boolean {
+  return !s.withdrawnAt;
+}
+
+/** 已领用重量合计 g（仅统计未撤回的切片） */
+export function consumedWeight(sections: ThinSection[]): number {
+  return sections
+    .filter(isSectionActive)
+    .reduce((sum, s) => sum + (Number(s.weightUsed) || 0), 0);
 }

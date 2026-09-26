@@ -30,7 +30,7 @@ import {
   mineralTotal,
   type SectionQuality,
 } from '../types/section';
-import { formatDate } from '../utils/format';
+import { formatDate, formatWeight } from '../utils/format';
 
 /** `/sections` 切片库 */
 export default function Sections() {
@@ -168,6 +168,7 @@ export default function Sections() {
                         {s.sectionNo}
                       </Typography>
                       <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                      {s.withdrawnAt ? <Chip size="small" label="已撤回" /> : null}
                     </Stack>
 
                     {sample ? (
@@ -190,7 +191,7 @@ export default function Sections() {
                     )}
 
                     <Typography variant="body2" color="text.secondary">
-                      厚度 {s.thickness} μm · {PREPARATION_LABELS[s.preparation]} · 登记 {formatDate(s.createdAt)}
+                      厚度 {s.thickness} μm · {PREPARATION_LABELS[s.preparation]} · 领用 {formatWeight(s.weightUsed)} · 登记 {formatDate(s.createdAt)}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       矿物：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}

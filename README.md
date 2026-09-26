@@ -51,7 +51,7 @@ docker compose down
 
 - `types/sample.ts` — **MeteoriteSample**：id、样本编号、总重量 g、分类、化学群、风化等级 W0–W4、发现/坠落、存放位置
 - `types/find.ts` — **FindRecord**：id、关联样本、地名、国家地区、经纬度、坐标来源（GPS/文献）、发现环境、发现者
-- `types/section.ts` — **ThinSection**：id、切片编号、关联样本、厚度 μm、制样方式、矿物占比、显微照片清单
+- `types/section.ts` — **ThinSection**：id、切片编号、关联样本、厚度 μm、制样方式、矿物占比、显微照片清单、领用重量 g、撤回时间与原因
 - `types/analysis.ts` — **AnalysisRecord**：id、关联样本或切片、方法、橄榄石 Fa、辉石 Fs、Ni wt%、铁纹石带宽 mm、检测日期
 
 ## 目录结构
@@ -71,7 +71,7 @@ sologsb-1125/
     ├── public/favicon.svg
     └── src/
         ├── types/{sample,find,section,analysis}.ts
-        ├── db/index.ts                 # Dexie 封装与 v1→v3 升级迁移
+        ├── db/index.ts                 # Dexie 封装与 v1→v4 升级迁移
         ├── stores/{sampleStore,uiStore}.ts
         ├── components/common/{SampleCard,Badge,FieldGroup,EmptyState,CoordinatePicker,AppShell}.tsx
         ├── hooks/{useSampleFilter,useLocalDraft,useRegionStats}.ts
@@ -87,6 +87,8 @@ sologsb-1125/
   - v1 建 `samples` / `finds` / `sections`
   - v2 新增 `analysis` 表并加 `sampleId` 索引
   - v3 为 `samples` 补 `updatedAt` 字段并按 id 回填旧记录
+  - v4 为 `sections` 补 `weightUsed`（领用重量）字段，旧记录按 0 回填
+- **重量台账**：新增切片必须填写领用重量，保存时在同一事务内校验并扣减样本可用余量——超出余量（含两人同时提交导致合计超量）的那笔直接失败、不写入切片；制样取消可撤回切片，填写原因后领用重量归还余量。样本详情页同步显示总重量、已领用与可用余量
 - **草稿**：`/samples/new` 与 `/analysis` 的表单草稿写入 localStorage（键前缀 `gbmeteorite:draft:`），切页自动恢复，提交后清理
 - 首次打开会灌入 3 份演示样本、2 条发现记录、2 张切片与 2 条检测记录，便于直接体验筛选与打点
 
