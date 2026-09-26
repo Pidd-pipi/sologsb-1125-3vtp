@@ -12,6 +12,7 @@ export const DB_NAME = 'gbmeteorite-db';
  *  - v1：建 samples / finds / sections 三张表
  *  - v2：新增 analysis 表，并为 analysis 加 sampleId 索引
  *  - v3：为 samples 补 updatedAt 字段，并按 id 回填旧记录
+ *  - v4：sections 接入重量台账，补 consumedWeight / cancelled 等字段并回填旧切片
  */
 export class MeteoriteDB extends Dexie {
   samples!: Table<MeteoriteSample, string>;
@@ -63,6 +64,25 @@ export class MeteoriteDB extends Dexie {
               sample.updatedAt =
                 typeof sample.createdAt === 'number' ? sample.createdAt : Date.now();
             }
+          });
+      });
+
+    this.version(4)
+      .stores({
+        samples:
+          'id, sampleNo, category, chemicalGroup, totalWeight, createdAt, updatedAt',
+        finds: 'id, sampleId, region, createdAt',
+        sections: 'id, sectionNo, sampleId, thickness, createdAt',
+        analysis: 'id, sampleId, sectionId, method, testedAt, createdAt',
+      })
+      .upgrade(async (tx) => {
+        // v4：旧切片接入重量台账，领用重量缺失时按 0 回填（不追溯扣减历史余量）
+        await tx
+          .table<ThinSection, string>('sections')
+          .toCollection()
+          .modify((section) => {
+            if (typeof section.consumedWeight !== 'number') section.consumedWeight = 0;
+            if (typeof section.cancelled !== 'boolean') section.cancelled = false;
           });
       });
   }
@@ -155,10 +175,12 @@ export async function seedIfEmpty(): Promise<void> {
         sectionNo: 'TS-2024-001',
         sampleId: 'sample_seed_1',
         thickness: 30,
+        consumedWeight: 12.5,
         preparation: 'resin',
         minerals: { olivine: 42, pyroxene: 28, feldspar: 12, metal: 18 },
         micrographs: ['met001_ppl.jpg', 'met001_xpl.jpg'],
         quality: 'good',
+        cancelled: false,
         createdAt: now - 86400000 * 35,
       },
       {
@@ -166,10 +188,12 @@ export async function seedIfEmpty(): Promise<void> {
         sectionNo: 'TS-2024-002',
         sampleId: 'sample_seed_2',
         thickness: 60,
+        consumedWeight: 30,
         preparation: 'epoxy',
         minerals: { olivine: 2, pyroxene: 5, feldspar: 1, metal: 92 },
         micrographs: ['met002_reflect.jpg'],
         quality: 'fair',
+        cancelled: false,
         createdAt: now - 86400000 * 25,
       },
     ]);

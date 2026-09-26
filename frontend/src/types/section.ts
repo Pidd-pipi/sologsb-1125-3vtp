@@ -25,11 +25,19 @@ export interface ThinSection {
   sampleId: string;
   /** 厚度，单位 μm */
   thickness: number;
+  /** 制样领用重量，单位 g；保存切片时从样本可用余量扣减 */
+  consumedWeight: number;
   preparation: PreparationMethod;
   minerals: MineralRatios;
   /** 显微照片清单（文件名 / 描述） */
   micrographs: string[];
   quality: SectionQuality;
+  /** 是否已因制样取消撤回；撤回后领用重量退回样本余量 */
+  cancelled: boolean;
+  /** 撤回原因（撤回时必填） */
+  cancelReason?: string;
+  /** 撤回时间 */
+  cancelledAt?: number;
   createdAt: number;
 }
 

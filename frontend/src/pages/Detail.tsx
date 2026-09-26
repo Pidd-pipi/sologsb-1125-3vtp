@@ -4,6 +4,11 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Divider,
   FormControl,
   Grid,
@@ -17,12 +22,13 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import UndoIcon from '@mui/icons-material/Undo';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import SampleCard from '../components/common/SampleCard';
 import FieldGroup from '../components/common/FieldGroup';
 import ClassificationBadge from '../components/common/Badge';
 import EmptyState from '../components/common/EmptyState';
-import { useSampleStore } from '../stores/sampleStore';
+import { useSampleStore, InsufficientWeightError } from '../stores/sampleStore';
 import { useToastStore } from '../stores/uiStore';
 import {
   ANALYSIS_METHODS,
@@ -41,6 +47,7 @@ import {
   type MineralRatios,
   type PreparationMethod,
   type SectionQuality,
+  type ThinSection,
 } from '../types/section';
 import {
   FALL_OR_FIND_LABELS,
@@ -51,6 +58,7 @@ import { FIND_ENVIRONMENT_LABELS, COORDINATE_SOURCE_LABELS } from '../types/find
 import { classifyByAnalysis, evaluateThresholds } from '../utils/classify';
 import { formatDate, formatNumber, formatWeight } from '../utils/format';
 import { formatCoordinate } from '../utils/geo';
+import { canConsume, weightLedger } from '../utils/weight';
 
 /** `/samples/:id` 样本详情 */
 export default function Detail() {
@@ -60,6 +68,7 @@ export default function Detail() {
   const sections = useSampleStore((s) => s.sections);
   const analysis = useSampleStore((s) => s.analysis);
   const addSection = useSampleStore((s) => s.addSection);
+  const cancelSection = useSampleStore((s) => s.cancelSection);
   const addAnalysis = useSampleStore((s) => s.addAnalysis);
   const updateSample = useSampleStore((s) => s.updateSample);
   const notify = useToastStore((s) => s.notify);
@@ -67,16 +76,25 @@ export default function Detail() {
   const sample = useMemo(() => samples.find((s) => s.id === id), [samples, id]);
   const find = useMemo(() => finds.find((f) => f.sampleId === id), [finds, id]);
   const mySections = useMemo(() => sections.filter((s) => s.sampleId === id), [sections, id]);
+  const activeSections = useMemo(() => mySections.filter((s) => !s.cancelled), [mySections]);
+  const cancelledSections = useMemo(() => mySections.filter((s) => s.cancelled), [mySections]);
   const myAnalysis = useMemo(() => analysis.filter((a) => a.sampleId === id), [analysis, id]);
 
   const [sectionDraft, setSectionDraft] = useState({
     sectionNo: '',
     thickness: 30,
+    consumedWeight: '' as number | '',
     preparation: 'resin' as PreparationMethod,
     quality: 'unrated' as SectionQuality,
     micrograph: '',
     minerals: { olivine: 40, pyroxene: 25, feldspar: 15, metal: 20 } as MineralRatios,
   });
+  const [sectionError, setSectionError] = useState<string | null>(null);
+  const [sectionSaving, setSectionSaving] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<ThinSection | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [analysisDraft, setAnalysisDraft] = useState({
     method: 'microprobe' as AnalysisMethod,
     fa: 18,
@@ -99,23 +117,83 @@ export default function Detail() {
     );
   }
 
+  const ledger = weightLedger(sample, mySections);
+  const requestedWeight = Number(sectionDraft.consumedWeight);
+  const weightTouched = sectionDraft.consumedWeight !== '';
+  const weightInvalid =
+    !weightTouched || !Number.isFinite(requestedWeight) || requestedWeight <= 0;
+  const overRemaining = !weightInvalid && !canConsume(ledger.remaining, requestedWeight);
   const mineralSum = mineralTotal(sectionDraft.minerals);
   const advice = classifyByAnalysis(analysisDraft);
   const hits = evaluateThresholds(analysisDraft);
 
   const submitSection = async () => {
-    const no = sectionDraft.sectionNo.trim() || `TS-${new Date().getFullYear()}-${mySections.length + 1}`.padEnd(3, '0');
-    await addSection({
-      sectionNo: no,
-      sampleId: sample.id,
-      thickness: Number(sectionDraft.thickness),
-      preparation: sectionDraft.preparation,
-      minerals: sectionDraft.minerals,
-      micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
-      quality: sectionDraft.quality,
-    });
-    notify(`已为 ${sample.sampleNo} 新增切片 ${no}`);
-    setSectionDraft((d) => ({ ...d, sectionNo: '', micrograph: '' }));
+    const no =
+      sectionDraft.sectionNo.trim() ||
+      `TS-${new Date().getFullYear()}-${activeSections.length + 1}`.padEnd(3, '0');
+    if (weightInvalid) {
+      setSectionError('请填写大于 0 的领用重量（g）');
+      return;
+    }
+    setSectionSaving(true);
+    setSectionError(null);
+    try {
+      await addSection({
+        sectionNo: no,
+        sampleId: sample.id,
+        thickness: Number(sectionDraft.thickness),
+        consumedWeight: requestedWeight,
+        preparation: sectionDraft.preparation,
+        minerals: sectionDraft.minerals,
+        micrographs: sectionDraft.micrograph.trim() ? [sectionDraft.micrograph.trim()] : [],
+        quality: sectionDraft.quality,
+      });
+    } catch (err) {
+      // 余量不足：切片未写入、已有记录不变，仅在表单处提示
+      if (err instanceof InsufficientWeightError) {
+        setSectionError(
+          `领用 ${err.requested} g 超过可用余量 ${formatWeight(err.remaining)}，该切片未保存，已有记录未改动。`,
+        );
+      } else {
+        setSectionError(err instanceof Error ? err.message : '切片保存失败');
+      }
+      setSectionSaving(false);
+      return;
+    }
+    setSectionSaving(false);
+    notify(`已为 ${sample.sampleNo} 新增切片 ${no}，扣减领用 ${formatWeight(requestedWeight)}`);
+    setSectionDraft((d) => ({
+      ...d,
+      sectionNo: '',
+      consumedWeight: '',
+      micrograph: '',
+    }));
+  };
+
+  const openCancel = (section: ThinSection) => {
+    setCancelTarget(section);
+    setCancelReason('');
+    setCancelError(null);
+  };
+
+  const submitCancel = async () => {
+    if (!cancelTarget) return;
+    if (!cancelReason.trim()) {
+      setCancelError('请填写撤回原因');
+      return;
+    }
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await cancelSection(cancelTarget.id, cancelReason);
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : '撤回失败');
+      setCancelling(false);
+      return;
+    }
+    notify(`切片 ${cancelTarget.sectionNo} 已撤回，领用 ${formatWeight(cancelTarget.consumedWeight)} 已退回余量`);
+    setCancelling(false);
+    setCancelTarget(null);
   };
 
   const submitAnalysis = async () => {
@@ -146,7 +224,7 @@ export default function Detail() {
           <SampleCard
             sample={sample}
             find={find}
-            sectionCount={mySections.length}
+            sectionCount={activeSections.length}
             analysisCount={myAnalysis.length}
           />
         </Grid>
@@ -183,7 +261,27 @@ export default function Detail() {
                   <Typography variant="caption" color="text.secondary">
                     总重量
                   </Typography>
-                  <Typography variant="body1">{formatWeight(sample.totalWeight)}</Typography>
+                  <Typography variant="body1">{formatWeight(ledger.total)}</Typography>
+                </Grid>
+                <Grid item xs={6} sm={4}>
+                  <Typography variant="caption" color="text.secondary">
+                    已领用（切片制样）
+                  </Typography>
+                  <Typography variant="body1" color="warning.dark">
+                    {formatWeight(ledger.consumed)}
+                  </Typography>
+                </Grid>
+                <Grid item xs={6} sm={4}>
+                  <Typography variant="caption" color="text.secondary">
+                    可用剩余
+                  </Typography>
+                  <Typography
+                    variant="body1"
+                    fontWeight={700}
+                    color={ledger.remaining <= 0 ? 'error.main' : 'success.dark'}
+                  >
+                    {formatWeight(ledger.remaining)}
+                  </Typography>
                 </Grid>
                 <Grid item xs={6} sm={4}>
                   <Typography variant="caption" color="text.secondary">
@@ -278,13 +376,56 @@ export default function Detail() {
         <Grid item xs={12} md={7}>
           <Paper variant="outlined" sx={{ p: 2.5 }}>
             <Typography variant="h6" sx={{ mb: 1.5 }}>
-              切片与制样（{mySections.length}）
+              切片与制样（{activeSections.length}）
             </Typography>
-            {mySections.length === 0 ? (
+
+            <Paper variant="outlined" sx={{ p: 1.5, mb: 2, bgcolor: 'grey.50' }}>
+              <Stack
+                direction="row"
+                spacing={3}
+                flexWrap="wrap"
+                useFlexGap
+                divider={<Divider orientation="vertical" flexItem />}
+              >
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    总重量
+                  </Typography>
+                  <Typography variant="subtitle1" fontWeight={700}>
+                    {formatWeight(ledger.total)}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    已领用
+                  </Typography>
+                  <Typography variant="subtitle1" fontWeight={700} color="warning.dark">
+                    {formatWeight(ledger.consumed)}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    剩余可用
+                  </Typography>
+                  <Typography
+                    variant="subtitle1"
+                    fontWeight={700}
+                    color={ledger.remaining <= 0 ? 'error.main' : 'success.dark'}
+                  >
+                    {formatWeight(ledger.remaining)}
+                  </Typography>
+                </Box>
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                新增切片时在此余量内扣减领用重量；撤回切片后余量自动恢复。
+              </Typography>
+            </Paper>
+
+            {activeSections.length === 0 && cancelledSections.length === 0 ? (
               <Alert severity="info">暂无切片记录，可在下方就地新增。</Alert>
             ) : (
               <Stack spacing={1.25}>
-                {mySections.map((s) => (
+                {activeSections.map((s) => (
                   <Box
                     key={s.id}
                     sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5 }}
@@ -293,10 +434,20 @@ export default function Detail() {
                       <Typography variant="subtitle1" fontWeight={700}>
                         {s.sectionNo}
                       </Typography>
-                      <Stack direction="row" spacing={0.75}>
+                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                        <Chip size="small" color="primary" label={`领用 ${formatWeight(s.consumedWeight)}`} />
                         <Chip size="small" label={`厚度 ${s.thickness} μm`} />
                         <Chip size="small" variant="outlined" label={PREPARATION_LABELS[s.preparation]} />
                         <Chip size="small" color="secondary" label={SECTION_QUALITY_LABELS[s.quality]} />
+                        <Button
+                          size="small"
+                          color="warning"
+                          startIcon={<UndoIcon />}
+                          onClick={() => openCancel(s)}
+                          id={`cancel-section-${s.id}`}
+                        >
+                          撤回
+                        </Button>
                       </Stack>
                     </Stack>
                     <Typography variant="body2" color="text.secondary">
@@ -305,6 +456,33 @@ export default function Detail() {
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
                       显微照片：{s.micrographs.length ? s.micrographs.join('、') : '未上传'}
+                    </Typography>
+                  </Box>
+                ))}
+                {cancelledSections.map((s) => (
+                  <Box
+                    key={s.id}
+                    sx={{
+                      border: '1px dashed',
+                      borderColor: 'divider',
+                      borderRadius: 2,
+                      p: 1.5,
+                      opacity: 0.75,
+                      bgcolor: 'grey.50',
+                    }}
+                  >
+                    <Stack direction="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
+                      <Typography variant="subtitle1" fontWeight={700} sx={{ textDecoration: 'line-through' }}>
+                        {s.sectionNo}
+                      </Typography>
+                      <Chip size="small" color="default" variant="outlined" label="已撤回（余量已恢复）" />
+                    </Stack>
+                    <Typography variant="body2" color="text.secondary">
+                      原领用 {formatWeight(s.consumedWeight)} · 厚度 {s.thickness} μm · 撤回时间{' '}
+                      {formatDate(s.cancelledAt ?? s.createdAt)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      撤回原因：{s.cancelReason ?? '—'}
                     </Typography>
                   </Box>
                 ))}
@@ -333,6 +511,30 @@ export default function Detail() {
                   value={sectionDraft.thickness}
                   onChange={(e) => setSectionDraft((d) => ({ ...d, thickness: Number(e.target.value) }))}
                   sx={{ width: 140 }}
+                />
+                <TextField
+                  id="section-consumed-weight"
+                  required
+                  size="small"
+                  type="number"
+                  label="领用重量 g"
+                  value={sectionDraft.consumedWeight}
+                  error={weightTouched && (weightInvalid || overRemaining)}
+                  helperText={
+                    weightTouched && (weightInvalid || overRemaining)
+                      ? weightInvalid
+                        ? '须为大于 0 的数值'
+                        : `超出可用剩余 ${formatWeight(ledger.remaining)}`
+                      : `可用剩余 ${formatWeight(ledger.remaining)}`
+                  }
+                  inputProps={{ min: 0, step: 'any' }}
+                  onChange={(e) =>
+                    setSectionDraft((d) => ({
+                      ...d,
+                      consumedWeight: e.target.value === '' ? '' : Number(e.target.value),
+                    }))
+                  }
+                  sx={{ width: 200 }}
                 />
                 <FormControl size="small" sx={{ minWidth: 150 }}>
                   <InputLabel id="prep-label">制样方式</InputLabel>
@@ -398,15 +600,20 @@ export default function Detail() {
               <Typography variant="caption" color={mineralSum === 100 ? 'success.main' : 'warning.main'}>
                 矿物占比合计 {mineralSum}%（建议合计 100%）
               </Typography>
+              {sectionError ? <Alert severity="error" id="section-save-error">{sectionError}</Alert> : null}
               <Button
                 variant="contained"
                 startIcon={<AddIcon />}
                 onClick={submitSection}
                 id="add-section"
+                disabled={sectionSaving || weightInvalid || overRemaining}
                 sx={{ alignSelf: 'flex-start' }}
               >
-                新增切片
+                {sectionSaving ? '保存中…' : '新增切片并扣减余量'}
               </Button>
+              <Typography variant="caption" color="text.secondary">
+                领用重量保存时从可用余量扣减；超出余量的提交不会写入切片，也不改动已有记录。
+              </Typography>
             </Stack>
           </Paper>
         </Grid>
@@ -546,6 +753,48 @@ export default function Detail() {
           </Paper>
         </Grid>
       </Grid>
+
+      <Dialog open={cancelTarget !== null} onClose={cancelling ? undefined : () => setCancelTarget(null)}>
+        <DialogTitle>撤回切片制样</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {cancelTarget
+              ? `撤回「${cancelTarget.sectionNo}」后，其领用的 ${formatWeight(
+                  cancelTarget.consumedWeight,
+                )} 将退回样本可用余量，切片记录保留并标注撤回原因。`
+              : ''}
+          </DialogContentText>
+          <TextField
+            id="cancel-reason"
+            autoFocus
+            fullWidth
+            required
+            multiline
+            minRows={2}
+            margin="dense"
+            label="撤回原因"
+            value={cancelReason}
+            error={cancelError !== null}
+            helperText={cancelError ?? '制样取消、切片损坏等，请写明原因'}
+            onChange={(e) => setCancelReason(e.target.value)}
+            sx={{ mt: 1.5 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCancelTarget(null)} disabled={cancelling}>
+            再想想
+          </Button>
+          <Button
+            onClick={submitCancel}
+            color="warning"
+            variant="contained"
+            disabled={cancelling || !cancelReason.trim()}
+            id="confirm-cancel-section"
+          >
+            {cancelling ? '撤回中…' : '确认撤回并恢复余量'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

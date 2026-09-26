@@ -40,7 +40,10 @@ export default function Overview() {
   const findBySample = useMemo(() => new Map(finds.map((f) => [f.sampleId, f])), [finds]);
   const sectionCount = useMemo(() => {
     const m = new Map<string, number>();
-    sections.forEach((s) => m.set(s.sampleId, (m.get(s.sampleId) ?? 0) + 1));
+    sections.forEach((s) => {
+      if (s.cancelled) return; // 撤回切片不计入持有数与「缺切片」角标
+      m.set(s.sampleId, (m.get(s.sampleId) ?? 0) + 1);
+    });
     return m;
   }, [sections]);
   const analysisCount = useMemo(() => {

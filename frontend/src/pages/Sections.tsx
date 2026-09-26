@@ -30,7 +30,7 @@ import {
   mineralTotal,
   type SectionQuality,
 } from '../types/section';
-import { formatDate } from '../utils/format';
+import { formatDate, formatWeight } from '../utils/format';
 
 /** `/sections` 切片库 */
 export default function Sections() {
@@ -52,6 +52,7 @@ export default function Sections() {
   const filtered = useMemo(
     () =>
       sections.filter((s) => {
+        if (s.cancelled) return false; // 已撤回的切片不进切片库与批量标注
         if (!visibleSampleIds.has(s.sampleId)) return false;
         if (thicknessMin !== null && s.thickness < thicknessMin) return false;
         if (thicknessMax !== null && s.thickness > thicknessMax) return false;
@@ -190,7 +191,7 @@ export default function Sections() {
                     )}
 
                     <Typography variant="body2" color="text.secondary">
-                      厚度 {s.thickness} μm · {PREPARATION_LABELS[s.preparation]} · 登记 {formatDate(s.createdAt)}
+                      厚度 {s.thickness} μm · 领用 {formatWeight(s.consumedWeight)} · {PREPARATION_LABELS[s.preparation]} · 登记 {formatDate(s.createdAt)}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
                       矿物：{MINERAL_KEYS.map((k) => `${MINERAL_LABELS[k]} ${s.minerals[k]}%`).join(' · ')}

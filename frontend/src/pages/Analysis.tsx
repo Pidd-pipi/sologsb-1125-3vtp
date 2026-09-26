@@ -75,7 +75,7 @@ export default function Analysis() {
   const [error, setError] = useState<string | null>(null);
 
   const sampleSections = useMemo(
-    () => sections.filter((s) => s.sampleId === value.sampleId),
+    () => sections.filter((s) => s.sampleId === value.sampleId && !s.cancelled),
     [sections, value.sampleId],
   );
 

@@ -51,7 +51,7 @@ docker compose down
 
 - `types/sample.ts` — **MeteoriteSample**：id、样本编号、总重量 g、分类、化学群、风化等级 W0–W4、发现/坠落、存放位置
 - `types/find.ts` — **FindRecord**：id、关联样本、地名、国家地区、经纬度、坐标来源（GPS/文献）、发现环境、发现者
-- `types/section.ts` — **ThinSection**：id、切片编号、关联样本、厚度 μm、制样方式、矿物占比、显微照片清单
+- `types/section.ts` — **ThinSection**：id、切片编号、关联样本、厚度 μm、领用重量 g、制样方式、矿物占比、显微照片清单；切片可因制样取消撤回（原因 + 时间），撤回后领用重量退回样本余量
 - `types/analysis.ts` — **AnalysisRecord**：id、关联样本或切片、方法、橄榄石 Fa、辉石 Fs、Ni wt%、铁纹石带宽 mm、检测日期
 
 ## 目录结构
@@ -87,6 +87,7 @@ sologsb-1125/
   - v1 建 `samples` / `finds` / `sections`
   - v2 新增 `analysis` 表并加 `sampleId` 索引
   - v3 为 `samples` 补 `updatedAt` 字段并按 id 回填旧记录
+  - v4 为 `sections` 接入重量台账（`consumedWeight` / `cancelled` 等），旧切片领用重量按 0 回填
 - **草稿**：`/samples/new` 与 `/analysis` 的表单草稿写入 localStorage（键前缀 `gbmeteorite:draft:`），切页自动恢复，提交后清理
 - 首次打开会灌入 3 份演示样本、2 条发现记录、2 张切片与 2 条检测记录，便于直接体验筛选与打点
 
